@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
-// Конфигурация Firebase
+// Конфигурация Firebase (используются глобальные переменные среды)
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -23,6 +23,7 @@ const App = () => {
   const months = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
   const weekDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
+  // 1. Инициализация Auth
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -31,7 +32,9 @@ const App = () => {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (err) { console.error(err); }
+      } catch (err) { 
+        console.error("Auth error:", err); 
+      }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -41,34 +44,55 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
+  // 2. Слушатель данных из Firestore
   useEffect(() => {
     if (!user) return;
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'mainData');
     const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) setCalendarData(docSnap.data().content || {});
-    }, (error) => console.error(error));
+      if (docSnap.exists()) {
+        setCalendarData(docSnap.data().content || {});
+      }
+    }, (error) => console.error("Firestore error:", error));
     return () => unsubscribe();
   }, [user]);
 
+  // 3. Сохранение в облако
   const saveToCloud = async (newData) => {
     if (!user) return;
-    const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'mainData');
-    await setDoc(userDocRef, { content: newData }, { merge: true });
+    try {
+      const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'mainData');
+      await setDoc(userDocRef, { content: newData }, { merge: true });
+    } catch (err) {
+      console.error("Save error:", err);
+    }
   };
 
   const openModal = (dayKey, postId = null) => {
     setCurrentDayKey(dayKey);
     setCurrentPostId(postId);
     const dayPosts = calendarData[dayKey] || [];
-    setFormData(postId !== null ? dayPosts[postId] : { topic: '', content: '', socials: [] });
+    setFormData(postId !== null ? { ...dayPosts[postId] } : { topic: '', content: '', socials: [] });
     setIsModalOpen(true);
   };
 
   const savePost = () => {
     const newData = { ...calendarData };
     if (!newData[currentDayKey]) newData[currentDayKey] = [];
-    if (currentPostId !== null) newData[currentDayKey][currentPostId] = formData;
-    else newData[currentDayKey].push(formData);
+    
+    if (currentPostId !== null) {
+      newData[currentDayKey][currentPostId] = formData;
+    } else {
+      newData[currentDayKey].push(formData);
+    }
+    
+    setCalendarData(newData);
+    saveToCloud(newData);
+    setIsModalOpen(false);
+  };
+
+  const deletePost = () => {
+    const newData = { ...calendarData };
+    newData[currentDayKey].splice(currentPostId, 1);
     setCalendarData(newData);
     saveToCloud(newData);
     setIsModalOpen(false);
@@ -80,84 +104,108 @@ const App = () => {
     saveToCloud(newData);
   };
 
+  const generateDays = (month, year) => {
+    const firstDay = new Date(year, month, 1).getDay();
+    const adjustedFirstDay = firstDay === 0 ? 6 : firstDay - 1;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const days = [];
+    for (let i = 0; i < adjustedFirstDay; i++) days.push(null);
+    for (let i = 1; i <= daysInMonth; i++) days.push(i);
+    return days;
+  };
+
   if (loading) return (
     <div className="h-screen w-full flex items-center justify-center bg-[#fff0f3]">
-      <div className="text-[#800000] font-bold animate-bounce text-xl">Загрузка...</div>
+      <div className="text-[#800000] font-bold animate-bounce text-xl">Загрузка календаря...</div>
     </div>
   );
 
   return (
     <div className="h-screen w-full bg-[#fff0f3] flex flex-col md:flex-row overflow-hidden font-sans text-[#4a4a4a]">
-      {/* Sidebar для ПК / Header для мобильных */}
-      <aside className="w-full md:w-[320px] bg-white/70 backdrop-blur-xl p-6 border-b md:border-r border-white/40 flex flex-col shadow-lg z-20">
+      
+      {/* Sidebar */}
+      <aside className="w-full md:w-[320px] bg-white/70 backdrop-blur-xl p-6 border-b md:border-r border-white/40 flex flex-col shadow-lg z-20 overflow-y-auto max-h-[40vh] md:max-h-full">
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 bg-[#800000] rounded-full flex items-center justify-center text-white font-bold">К</div>
+          <div className="w-10 h-10 bg-[#800000] rounded-full flex items-center justify-center text-white font-bold text-xl shadow-inner">К</div>
           <h2 className="text-[#800000] font-black text-xl tracking-tighter uppercase">Кот и Код</h2>
         </div>
         
-        <div className="flex-grow overflow-y-auto">
+        <div className="flex-grow">
           <label className="text-[10px] uppercase tracking-widest text-[#008080] font-bold mb-2 block">Идеи месяца</label>
           <textarea 
-            className="w-full h-40 md:h-64 bg-transparent border-none outline-none resize-none text-sm leading-relaxed"
-            placeholder="Записывай всё, что вдохновляет для Заботливого образования..."
+            className="w-full h-32 md:h-64 bg-white/30 p-3 rounded-xl border-none outline-none resize-none text-sm leading-relaxed focus:ring-1 ring-[#008080]/30 transition-all"
+            placeholder="Записывай вдохновение для Заботливого образования..."
             value={calendarData[`ideas-2026-${activeMonth}`] || ''}
             onChange={(e) => updateIdea(activeMonth, e.target.value)}
           />
         </div>
 
-        {/* Переключатель месяцев для мобильных (горизонтальный скролл) */}
-        <div className="flex md:grid md:grid-cols-2 gap-2 mt-4 overflow-x-auto pb-2 no-scrollbar">
-          {months.map((m, i) => (
-            <button 
-              key={i} 
-              onClick={() => setActiveMonth(i)}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeMonth === i ? 'bg-[#800000] text-white shadow-md' : 'bg-white/50 text-[#4a4a4a] hover:bg-white'
-              }`}
-            >
-              {m}
-            </button>
-          ))}
+        <div className="mt-6">
+          <label className="text-[10px] uppercase tracking-widest text-[#008080] font-bold mb-3 block">Навигация</label>
+          <div className="flex md:grid md:grid-cols-2 gap-2 overflow-x-auto pb-2 no-scrollbar">
+            {months.map((m, i) => (
+              <button 
+                key={i} 
+                onClick={() => setActiveMonth(i)}
+                className={`px-3 py-2 rounded-xl text-[11px] font-bold transition-all whitespace-nowrap border ${
+                  activeMonth === i 
+                  ? 'bg-[#800000] text-white border-[#800000] shadow-md scale-105' 
+                  : 'bg-white/50 text-[#4a4a4a] border-transparent hover:bg-white'
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
       </aside>
 
-      {/* Основная сетка */}
+      {/* Main Grid */}
       <main className="flex-grow overflow-y-auto p-4 md:p-10 relative">
         <div className="max-w-5xl mx-auto">
           <div className="flex justify-between items-end mb-8">
-            <h1 className="text-4xl md:text-6xl font-black text-[#800000] lowercase">{months[activeMonth]}</h1>
-            <div className="text-right">
-              <p className="text-[#008080] font-bold text-xs uppercase tracking-widest">2026</p>
-              <p className="text-[10px] opacity-50 italic">Заботливое образование</p>
+            <div>
+              <h1 className="text-4xl md:text-6xl font-black text-[#800000] lowercase leading-none">{months[activeMonth]}</h1>
+              <p className="text-[#008080] font-bold text-xs uppercase tracking-[0.2em] mt-2">Content Calendar 2026</p>
+            </div>
+            <div className="text-right hidden sm:block">
+              <p className="text-[10px] opacity-60 italic font-medium">Ниша: Заботливое образование</p>
+              <div className="w-12 h-1 bg-[#800000] ml-auto mt-1 rounded-full"></div>
             </div>
           </div>
 
           <div className="grid grid-cols-7 gap-1 md:gap-4 mb-4">
-            {weekDays.map(d => <div key={d} className="text-center text-[10px] md:text-xs font-bold text-[#008080] opacity-60 uppercase">{d}</div>)}
+            {weekDays.map(d => (
+              <div key={d} className="text-center text-[10px] md:text-xs font-black text-[#008080] opacity-40 uppercase tracking-tighter">
+                {d}
+              </div>
+            ))}
           </div>
 
-          <div className="grid grid-cols-7 gap-1 md:gap-4 auto-rows-fr min-h-[500px]">
+          <div className="grid grid-cols-7 gap-1 md:gap-4 auto-rows-fr">
             {generateDays(activeMonth, 2026).map((day, i) => (
-              <div key={i} className={`aspect-square md:aspect-auto min-h-[80px] md:min-h-[120px] rounded-xl md:rounded-[24px] p-2 flex flex-col group transition-all shadow-sm ${
-                day ? 'bg-white/80 border border-white/60 hover:shadow-xl hover:-translate-y-1' : 'bg-transparent'
+              <div key={i} className={`min-h-[70px] md:min-h-[120px] rounded-xl md:rounded-[28px] p-2 flex flex-col group transition-all duration-300 ${
+                day 
+                ? 'bg-white/80 border border-white/60 hover:shadow-xl hover:-translate-y-1 hover:bg-white cursor-default' 
+                : 'bg-transparent border border-transparent'
               }`}>
                 {day && (
                   <>
                     <div className="flex justify-between items-center mb-1">
-                      <span className="font-black text-[#008080] text-sm md:text-lg">{day}</span>
+                      <span className="font-black text-[#008080] text-xs md:text-xl opacity-80">{day}</span>
                       <button 
                         onClick={() => openModal(`2026-${activeMonth}-${day}`)}
-                        className="w-5 h-5 md:w-8 md:h-8 rounded-full bg-[#f3f0ff] text-[#008080] flex items-center justify-center text-lg hover:bg-[#008080] hover:text-white transition-colors"
+                        className="w-5 h-5 md:w-8 md:h-8 rounded-full bg-[#f3f0ff] text-[#008080] flex items-center justify-center text-sm md:text-lg hover:bg-[#008080] hover:text-white transition-all transform active:scale-90"
                       >+</button>
                     </div>
-                    <div className="flex-grow overflow-y-auto space-y-1">
+                    <div className="flex-grow overflow-y-auto space-y-1 no-scrollbar">
                       {(calendarData[`2026-${activeMonth}-${day}`] || []).map((post, pIdx) => (
                         <div 
                           key={pIdx}
                           onClick={() => openModal(`2026-${activeMonth}-${day}`, pIdx)}
-                          className="text-[8px] md:text-[10px] p-1 bg-[#fff0f3] rounded-md border-l-2 border-[#800000] truncate cursor-pointer font-medium"
+                          className="text-[8px] md:text-[10px] p-1.5 bg-[#fff0f3] rounded-lg border-l-2 border-[#800000] truncate cursor-pointer font-bold text-[#800000] hover:bg-[#ffe4e9] transition-colors"
                         >
-                          {post.topic || 'Пост'}
+                          {post.topic || 'Пост...'}
                         </div>
                       ))}
                     </div>
@@ -169,76 +217,82 @@ const App = () => {
         </div>
       </main>
 
-      {/* Модалка адаптирована под мобильные (высота на весь экран на телефонах) */}
+      {/* Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center bg-[#800000]/20 backdrop-blur-md p-0 md:p-4">
-          <div className="bg-white w-full max-w-2xl rounded-t-[32px] md:rounded-[40px] p-6 md:p-10 shadow-2xl h-[90vh] md:h-auto overflow-y-auto">
-            <div className="flex justify-between items-center mb-8">
-              <h2 className="text-xl md:text-2xl font-black text-[#800000] uppercase tracking-tighter">Редактор смыслов</h2>
-              <button onClick={() => setIsModalOpen(false)} className="w-10 h-10 flex items-center justify-center text-3xl text-[#008080]">&times;</button>
+        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center bg-[#800000]/10 backdrop-blur-md p-0 md:p-4">
+          <div className="bg-white w-full max-w-2xl rounded-t-[32px] md:rounded-[40px] p-6 md:p-10 shadow-2xl h-[85vh] md:h-auto overflow-y-auto transform transition-transform duration-300 ease-out">
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h2 className="text-xl md:text-2xl font-black text-[#800000] uppercase tracking-tighter">Редактор смыслов</h2>
+                <p className="text-[10px] text-[#008080] font-bold uppercase mt-1">Заботливое образование</p>
+              </div>
+              <button 
+                onClick={() => setIsModalOpen(false)} 
+                className="w-12 h-12 flex items-center justify-center text-4xl text-[#008080] hover:rotate-90 transition-transform"
+              >&times;</button>
             </div>
 
-            <input 
-              className="w-full p-4 md:p-5 bg-[#f3f0ff]/50 border-none rounded-2xl mb-4 focus:ring-2 ring-[#008080] outline-none font-bold"
-              placeholder="Тема сторителлинга..."
-              value={formData.topic}
-              onChange={(e) => setFormData({...formData, topic: e.target.value})}
-            />
+            <div className="space-y-4">
+              <input 
+                className="w-full p-4 md:p-5 bg-[#f3f0ff]/50 border-none rounded-2xl focus:ring-2 ring-[#008080] outline-none font-bold text-[#4a4a4a] placeholder:text-[#4a4a4a]/40"
+                placeholder="Тема сторителлинга..."
+                value={formData.topic}
+                onChange={(e) => setFormData({...formData, topic: e.target.value})}
+              />
 
-            <textarea 
-              className="w-full h-48 md:h-64 p-4 md:p-5 bg-[#f3f0ff]/30 border-none rounded-2xl mb-6 outline-none resize-none leading-relaxed text-sm md:text-base"
-              placeholder="Напиши здесь историю, которая тронет сердца учителей..."
-              value={formData.content}
-              onChange={(e) => setFormData({...formData, content: e.target.value})}
-            />
+              <textarea 
+                className="w-full h-40 md:h-64 p-4 md:p-5 bg-[#f3f0ff]/30 border-none rounded-2xl outline-none resize-none leading-relaxed text-sm md:text-base text-[#4a4a4a] placeholder:text-[#4a4a4a]/30"
+                placeholder="Напиши здесь историю, которая тронет сердца учителей и родителей..."
+                value={formData.content}
+                onChange={(e) => setFormData({...formData, content: e.target.value})}
+              />
 
-            <div className="flex flex-wrap gap-2 mb-8">
-              {['tg', 'ig', 'vk', 'pin'].map(p => (
-                <button 
-                  key={p}
-                  onClick={() => setFormData(prev => ({...prev, socials: prev.socials.includes(p) ? prev.socials.filter(s => s !== p) : [...prev.socials, p]}))}
-                  className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${
-                    formData.socials.includes(p) ? 'bg-[#008080] text-white' : 'bg-[#f3f0ff] text-[#4a4a4a]'
-                  }`}
-                >
-                  {p.toUpperCase()}
-                </button>
-              ))}
+              <div>
+                <label className="text-[10px] uppercase font-black text-[#008080] mb-2 block">Площадки публикации</label>
+                <div className="flex flex-wrap gap-2">
+                  {['tg', 'ig', 'vk', 'pin'].map(p => (
+                    <button 
+                      key={p}
+                      onClick={() => setFormData(prev => ({
+                        ...prev, 
+                        socials: prev.socials.includes(p) ? prev.socials.filter(s => s !== p) : [...prev.socials, p]
+                      }))}
+                      className={`px-5 py-2 rounded-full text-xs font-black transition-all border-2 ${
+                        formData.socials.includes(p) 
+                        ? 'bg-[#008080] border-[#008080] text-white shadow-md' 
+                        : 'bg-white border-[#f3f0ff] text-[#4a4a4a]'
+                      }`}
+                    >
+                      {p.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <div className="flex gap-4">
+            <div className="flex gap-4 mt-8">
               {currentPostId !== null && (
                 <button 
-                  onClick={() => {
-                    const newData = { ...calendarData };
-                    newData[currentDayKey].splice(currentPostId, 1);
-                    setCalendarData(newData);
-                    saveToCloud(newData);
-                    setIsModalOpen(false);
-                  }}
-                  className="px-6 py-4 bg-red-50 text-red-500 rounded-2xl font-bold text-sm"
+                  onClick={deletePost}
+                  className="px-6 py-4 bg-red-50 text-red-500 rounded-2xl font-bold text-sm hover:bg-red-100 transition-colors"
                 >Удалить</button>
               )}
               <button 
                 onClick={savePost}
-                className="flex-grow py-4 bg-gradient-to-t from-[#800000] to-[#d63031] text-white rounded-2xl font-bold shadow-lg shadow-red-900/20 active:scale-95 transition-all"
+                className="flex-grow py-4 bg-gradient-to-t from-[#800000] to-[#d63031] text-white rounded-2xl font-black text-sm md:text-base shadow-xl shadow-red-900/20 active:scale-[0.98] transition-all uppercase tracking-widest"
               >Сохранить в облако</button>
             </div>
           </div>
         </div>
       )}
+
+      <style>{`
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
     </div>
   );
-};
-
-const generateDays = (month, year) => {
-  const firstDay = new Date(year, month, 1).getDay();
-  const adjustedFirstDay = firstDay === 0 ? 6 : firstDay - 1;
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const days = [];
-  for (let i = 0; i < adjustedFirstDay; i++) days.push(null);
-  for (let i = 1; i <= daysInMonth; i++) days.push(i);
-  return days;
 };
 
 export default App;
